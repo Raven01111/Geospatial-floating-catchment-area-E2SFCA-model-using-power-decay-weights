@@ -1,0 +1,108 @@
+Ai merge + interaction + visualization: /*-------------------------------------------
+  STEP 1: Import and Clean Survey and FQHC Data
+--------------------------------------------*/
+proc import datafile="/home/u59438703/CINJ/survey_data.xlsx" out=survey_data dbms=xlsx replace;
+    getnames=yes;
+run;
+ 
+data survey_data;
+    set survey_data;
+    weight_num = input(weight, best12.);
+    weight_ab  = input(weightAB, best12.);
+    weight_cd  = input(weightCD, best12.);
+    weight_ef  = input(weightEF, best12.);
+    weight_gh  = input(weightGH, best12.);
+run;
+ 
+/*-------------------------------------------
+  STEP 2: Import Accessibility Scores and Merge
+--------------------------------------------*/
+proc import datafile="/home/u59438703/CINJ/accessibility_scores_tiered.csv"
+    out=accessibility_scores dbms=csv replace;
+    getnames=yes;
+run;
+ 
+proc sort data=accessibility_scores; by tract_id; run;
+proc sort data=survey_data; by tract_id; run;
+ 
+data survey_merged;
+    merge survey_data (in=a) accessibility_scores (in=b);
+    by tract_id;
+    if a;
+run;
+ 
+/*-------------------------------------------
+  STEP 3: Recode Outcome for Binary Logistic Modeling
+--------------------------------------------*/
+data survey_binary;
+    set survey_merged;
+    full_adhere = (colon_screening = 1);
+    access_score = accessibility_score; /* rename for easier handling */
+run;
+ 
+/*-------------------------------------------
+  STEP 4: Logistic Regression with Interaction Term
+--------------------------------------------*/
+proc logistic data=survey_binary plots=effect plots(only)=oddsratio;
+    class age_grp(ref='18-29') screening_behavior(ref='1') / param=ref;
+    model full_adhere(event='1') = age_grp screening_behavior access_score 
+                                   age_grp*screening_behavior
+                                   age_grp*access_score
+                                   screening_behavior*access_score
+                                   age_grp*screening_behavior*access_score;
+    oddsratio age_grp;
+    oddsratio screening_behavior;
+    oddsratio access_score;
+    title "Interaction Model: Age x Screening Behavior x Accessibility Score";
+run;
+ 
+/*-------------------------------------------
+  STEP 5: Predict Probabilities for Visualization
+--------------------------------------------*/
+proc logistic data=survey_binary;
+    class age_grp screening_behavior / param=ref;
+    model full_adhere(event='1') = age_grp screening_behavior access_score 
+                                   age_grp*screening_behavior
+                                   age_grp*access_score
+                                   screening_behavior*access_score
+                                   age_grp*screening_behavior*access_score;
+    output out=predicted_probs pred=pred_prob;
+run;
+ 
+/*-------------------------------------------
+  STEP 6: Visualization of Predicted Probabilities
+--------------------------------------------*/
+proc sgplot data=predicted_probs;
+    vbox pred_prob / category=age_grp group=screening_behavior;
+    title "Predicted Probability of CRC Screening Adherence";
+    xaxis label="Age Group";
+    yaxis label="Predicted Probability";
+run;
+ 
+expanded outputs and visualizations + Heatmap: proc export data=predicted_probs
+    outfile="/home/u59438703/CINJ/predicted_probabilities.csv"
+    dbms=csv replace;
+run;
+proc sgplot data=predicted_probs;
+    scatter x=access_score y=pred_prob / group=age_grp markerattrs=(symbol=circlefilled);
+    loess x=access_score y=pred_prob / group=age_grp nomarkers;
+    title "Predicted Probability by Accessibility Score and Age Group";
+    xaxis label="Accessibility Score (Ai)";
+    yaxis label="Predicted Probability of Screening Adherence";
+run;
+proc sgpanel data=predicted_probs;
+    panelby screening_behavior / layout=panel columns=2;
+    scatter x=access_score y=pred_prob / group=age_grp;
+    loess x=access_score y=pred_prob / group=age_grp;
+    colaxis label="Accessibility Score (Ai)";
+    rowaxis label="Predicted Probability";
+    title "Interaction: Access Score × Age × Screening Behavior";
+run;
+proc sgplot data=predicted_probs;
+    gradlegend;
+    bubble x=lon y=lat size=pred_prob / bradiusmin=5 bradiusmax=20
+           fillattrs=(transparency=0.3) name="p";
+    title "Heat Map of Predicted Probability by Tract";
+    xaxis label="Longitude";
+    yaxis label="Latitude";
+run;
